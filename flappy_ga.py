@@ -280,6 +280,8 @@ class FlappyGAGame(FlappyGame):
         self.generation = 1
         self.birds = [Bird() for _ in range(self.population_size)]
 
+        self.last_checkpoint_pipe = 0
+
         # If we're using a checkpoint and a checkpoint network is available,
         # inject the checkpoint network into a fraction (injection_rate) of the population.
         if self.use_checkpoint and self.checkpoint_network is not None and self.injection_rate > 0:
@@ -382,9 +384,18 @@ class FlappyGAGame(FlappyGame):
                     alive_count += 1
 
             # Track best fitness for lifetime display
+            current_score = max(b.score for b in self.birds)
             current_gen_best = max(b.fitness for b in self.birds)
             if current_gen_best > self.best_lifetime_fitness:
                 self.best_lifetime_fitness = current_gen_best
+
+            if current_score >= self.last_checkpoint_pipe + 5000:
+                if current_gen_best > self.checkpoint_fitness:
+                    best_bird = max(self.birds, key=lambda b: b.fitness)
+                    save_checkpoint(best_bird.brain, best_bird.fitness, CHECKPOINT_FILE)
+                    self.checkpoint_fitness = best_bird.fitness
+                    self.last_checkpoint_pipe = current_score
+                    print(f"Mid-generation checkpoint saved at score {current_score}!")
 
             # If all birds are dead, prepare for the next generation.
             if alive_count == 0:
