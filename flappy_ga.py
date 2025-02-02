@@ -2,6 +2,7 @@ import pygame
 import random
 import sys
 import numpy as np
+import argparse
 
 # ----------------------------------------------
 # Import from the manual Flappy Bird script
@@ -18,7 +19,7 @@ from flappy_game import (
 )
 
 # ------------------ Configuration / GA Settings ------------------
-POPULATION_SIZE = 100  # number of birds per generation
+POPULATION_SIZE = 100  # default number of birds per generation
 MUTATION_RATE   = 0.1
 INPUT_SIZE      = 4   # number of inputs fed to the neural network
 HIDDEN_SIZE     = 8   # hidden neurons
@@ -190,7 +191,7 @@ class Pipe:
         )
 
 # ------------------ Population / GA Helpers ------------------
-def next_generation(old_birds):
+def next_generation(old_birds, population_size=POPULATION_SIZE):
     """
     Evolve the next generation of birds:
     1) Sort by fitness
@@ -216,7 +217,7 @@ def next_generation(old_birds):
                 return bird
         return random.choice(old_birds)
 
-    while len(new_birds) < POPULATION_SIZE:
+    while len(new_birds) < population_size:
         parent1 = select_parent()
         parent2 = select_parent()
         child_brain = NeuralNetwork.crossover(parent1.brain, parent2.brain)
@@ -225,18 +226,69 @@ def next_generation(old_birds):
 
     return new_birds
 
+# ------------------ Checkpoint Functions ------------------
+CHECKPOINT_FILE = "checkpoint.npz"
+
+def save_checkpoint(nn, fitness, filename=CHECKPOINT_FILE):
+    """
+    Saves the neural network weights and biases along with its fitness.
+    """
+    np.savez(filename, w1=nn.w1, b1=nn.b1, w2=nn.w2, b2=nn.b2, fitness=fitness)
+    print("Checkpoint saved with fitness:", fitness)
+
+def load_checkpoint(filename=CHECKPOINT_FILE):
+    """
+    Loads the checkpoint file and returns a tuple (neural network, fitness).
+    If no file is found, returns (None, 0).
+    """
+    try:
+        data = np.load(filename)
+        nn = NeuralNetwork()
+        nn.w1 = data["w1"]
+        nn.b1 = data["b1"]
+        nn.w2 = data["w2"]
+        nn.b2 = data["b2"]
+        fitness = float(data["fitness"])
+        return nn, fitness
+    except FileNotFoundError:
+        return None, 0
+
 # ------------------ GA-Flappy Game Class ------------------
 class FlappyGAGame(FlappyGame):
     """
     Inherits from FlappyGame to reuse the basic setup,
     but overrides logic for multiple birds + GA.
     """
-
-    def __init__(self):
+    def __init__(self, use_checkpoint=False, population_size=POPULATION_SIZE, injection_rate=0.0):
         # Override the caption to avoid "Flappy Bird (Manual)"
         super().__init__(caption="Flappy Bird (Genetic Algorithm Mode)")
+        self.use_checkpoint = use_checkpoint
+        self.population_size = population_size
+        self.injection_rate = injection_rate
+
+        # Always try to load the checkpoint file for comparison.
+        loaded_nn, loaded_fitness = load_checkpoint(CHECKPOINT_FILE)
+        if loaded_nn is not None:
+            self.checkpoint_fitness = loaded_fitness
+            print("Loaded checkpoint with fitness:", loaded_fitness)
+            # Only load the weights into memory for use if the flag is specified.
+            self.checkpoint_network = loaded_nn if self.use_checkpoint else None
+        else:
+            self.checkpoint_fitness = 0
+            self.checkpoint_network = None
+
         self.generation = 1
-        self.birds = [Bird() for _ in range(POPULATION_SIZE)]
+        self.birds = [Bird() for _ in range(self.population_size)]
+
+        # If we're using a checkpoint and a checkpoint network is available,
+        # inject the checkpoint network into a fraction (injection_rate) of the population.
+        if self.use_checkpoint and self.checkpoint_network is not None and self.injection_rate > 0:
+            injection_count = int(round(self.population_size * self.injection_rate))
+            indices = random.sample(range(self.population_size), injection_count)
+            for idx in indices:
+                self.birds[idx] = Bird(brain=self.checkpoint_network.copy())
+            print(f"Injected checkpoint network into {injection_count} birds of the population.")
+
         self.pipes = [Pipe()]
         self.frame_count = 0
         self.best_lifetime_fitness = 0
@@ -294,6 +346,7 @@ class FlappyGAGame(FlappyGame):
             # Identify closest pipe for decision-making
             closest_pipe = None
             for pipe in self.pipes:
+                # As soon as we find one that hasn't gone past the bird's x, break
                 if pipe.x + PIPE_WIDTH > self.birds[0].x:
                     closest_pipe = pipe
                     break
@@ -328,15 +381,21 @@ class FlappyGAGame(FlappyGame):
                 if bird.alive:
                     alive_count += 1
 
-            # Track best fitness
+            # Track best fitness for lifetime display
             current_gen_best = max(b.fitness for b in self.birds)
             if current_gen_best > self.best_lifetime_fitness:
                 self.best_lifetime_fitness = current_gen_best
 
-            # Next generation if all birds are dead
+            # If all birds are dead, prepare for the next generation.
             if alive_count == 0:
+                # Always update the checkpoint if the current generation's best fitness is improved.
+                if current_gen_best > self.checkpoint_fitness:
+                    best_bird = max(self.birds, key=lambda b: b.fitness)
+                    save_checkpoint(best_bird.brain, best_bird.fitness, CHECKPOINT_FILE)
+                    self.checkpoint_fitness = best_bird.fitness
+
                 self.generation += 1
-                self.birds = next_generation(self.birds)
+                self.birds = next_generation(self.birds, self.population_size)
                 self.pipes = [Pipe()]
                 self.frame_count = 0
 
@@ -353,7 +412,21 @@ class FlappyGAGame(FlappyGame):
             pygame.display.flip()
 
 def main():
-    game = FlappyGAGame()
+    parser = argparse.ArgumentParser(description="Flappy Bird (Genetic Algorithm Mode)")
+    parser.add_argument("--no-checkpoint", dest="use_checkpoint", action="store_false",
+                        help="If set, do not load the checkpoint weights into the population. (Default: load checkpoint)")
+    parser.add_argument("--population_size", type=int, default=POPULATION_SIZE,
+                        help="Population size for the GA (default: 100).")
+    parser.add_argument("--injection_rate", type=float, default=0.2,
+                        help="Fraction of new population that receives the checkpoint network if loaded.")
+    parser.set_defaults(use_checkpoint=True)
+    args = parser.parse_args()
+
+    game = FlappyGAGame(
+        use_checkpoint=args.use_checkpoint, 
+        population_size=args.population_size, 
+        injection_rate=args.injection_rate
+    )
     game.run()
 
 if __name__ == "__main__":
